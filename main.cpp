@@ -1,118 +1,119 @@
 #include <iostream>
-#include <vector>
-#include <thread>
-#include <cmath>
+#include <math.h>
 #include <chrono>
+#include <pthread.h>
+
+using namespace std;
 
 #define STB_IMAGE_IMPLEMENTATION
-#define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "/home/matthew/lessons/OS/sobel_filter/stb_image.h"
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "/home/matthew/lessons/OS/sobel_filter/stb_image_write.h"
 
-
 struct ThreadData {
-    stbi_uc* image;
-    std::vector<unsigned char> result;
-    int width, height, channels;
-    int start_row, end_row;
+    int start_row;
+    int end_row;
+    int width;
+    int height;
+    unsigned char* input_img;
+    unsigned char* output_img;
+};
+
+// Ядро фильтра Собела по оси X
+const int kernelX[3][3] = {
+    {-1, 0, 1},
+    {-2, 0, 2},
+    {-1, 0, 1}
+};
+    
+// Ядро фильтра Собела по оси Y
+const int kernelY[3][3] = {
+    {1, 2, 1},
+    {0, 0, 0},
+    {-1, -2, -1}
 };
 
 // Функция для применения фильтра Собела к изображению
-void applySobelFilter(ThreadData &data) {
+void* applySobelFilter(void* arg) {
+    ThreadData* data = (ThreadData*)arg;
+    int width = data->width;
+    int height = data->height;
     int gx, gy;
     
-    // Ядро фильтра Собела по оси X
-    int kernelX[3][3] = {
-        {-1, 0, 1},
-        {-2, 0, 2},
-        {-1, 0, 1}
-    };
     
-    // Ядро фильтра Собела по оси Y
-    int kernelY[3][3] = {
-        {1, 2, 1},
-        {0, 0, 0},
-        {-1, -2, -1}
-    };
-
-    auto start = std::chrono::high_resolution_clock::now();  // Засекаем время начала
-
-    for (int i = data.start_row; i < data.end_row; i++) {
-        for (int j = 1; j < data.width - 1; j++) {
+    for (int i = data->start_row; i < data->end_row; i++) {
+        for (int j = 1; j < width - 1; j++) {
             gx = 0;
             gy = 0;
             
             // Применяем ядра фильтра Собела к пикселям изображения
             for (int k = -1; k <= 1; k++) {
                 for (int l = -1; l <= 1; l++) {
-                    int pixel = data.image[((i + k) * data.width + (j + l)) * 3];
+                    int pixel = data->input_img[(k + i) * width + (l + j)];
                     gx += pixel * kernelX[k + 1][l + 1];
                     gy += pixel * kernelY[k + 1][l + 1];
                 }
             }
             
             // Вычисляем градиент изображения
-            int magnitude = (int) std::sqrt(gx * gx + gy * gy);
-            data.result[(i * data.width + j) * 3] = magnitude; // Градиент по оси R
-            data.result[(i * data.width + j) * 3 + 1] = magnitude; // Градиент по оси G
-            data.result[(i * data.width + j) * 3 + 2] = magnitude; // Градиент по оси B
+            double gradient = sqrt(gx * gx + gy * gy);
+            if (gradient > 255) gradient = 255;
+            if (gradient < 0) gradient = 0;
+            data->output_img[i * data->width + j] = (unsigned char)gradient;
         }
     }
-
-    auto end = std::chrono::high_resolution_clock::now();  // Засекаем время конца
-    std::chrono::duration<double> duration = end - start;  // Рассчитываем время выполнения
-
-    std::cout << "Thread processed rows " << data.start_row << " to " << data.end_row
-              << " in " << duration.count() << " seconds." << std::endl;  // Выводим время выполнения
+    pthread_exit(nullptr);
 }
 
-int main() {
+int main() 
+{
     int width, height, channels;
+    const int num = 6; 
+    int threads[] = {1, 2, 4, 8, 16, 32};
     
-    // Загрузка изображения с использованием stbi_load, возвращается указатель на массив
-    unsigned char* image = stbi_load("/home/matthew/lessons/OS/sobel_filter/olen_art_vektor_134088_1920x1080.jpg", &width, &height, &channels, 0);
-    if (!image) {
-        std::cerr << "Error loading image" << std::endl;
-        return -1;
-    }
+    unsigned char* input_img = stbi_load("/home/matthew/lessons/OS/sobel_filter/adv_times.png", &width, &height, &channels, 1);
 
-    // Результирующий вектор для обработки изображения
-    std::vector<unsigned char> result(width * height * 3);
 
-    // Разделим работу на несколько потоков
-    int num_threads = 4;
-    std::vector<std::thread> threads;
-    std::vector<ThreadData> thread_data(num_threads);
+    unsigned char* output_img = new unsigned char[width * height * channels];
 
-    int rows_per_thread = height / num_threads;
 
-    // Разделяем работу между потоками
-    for (int i = 0; i < num_threads; i++) {
-        thread_data[i] = {image, std::vector<unsigned char>(width * height * 3), width, height, channels, i * rows_per_thread, (i == num_threads - 1) ? height : (i + 1) * rows_per_thread};
-        threads.push_back(std::thread(applySobelFilter, std::ref(thread_data[i])));
-    }
+    for (int i = 0; i < num; i++){
 
-    // Ожидаем завершения всех потоков
-    for (auto &t : threads) {
-        t.join();
-    }
+        int rows = (height - 1) / threads[i];
+        int start_row = 1;
+        int end_row = rows;
 
-    // Объединяем результаты
-    for (int i = 0; i < num_threads; i++) {
-        for (int row = thread_data[i].start_row; row < thread_data[i].end_row; row++) {
-            for (int col = 0; col < width; col++) {
-                result[(row * width + col) * 3] = thread_data[i].result[(row * width + col) * 3];
-                result[(row * width + col) * 3 + 1] = thread_data[i].result[(row * width + col) * 3 + 1];
-                result[(row * width + col) * 3 + 2] = thread_data[i].result[(row * width + col) * 3 + 2];
-            }
+        pthread_t threads_list[threads[i]]; 
+        ThreadData thread_data[threads[i]];
+
+        auto start = chrono::steady_clock::now(); 
+
+        for (int j = 0; j < threads[i]; j++){
+            thread_data[j].start_row = start_row;
+            thread_data[j].end_row = end_row;
+
+            thread_data[j].width = width;
+            thread_data[j].height = height;
+            thread_data[j].input_img = input_img;
+            thread_data[j].output_img = output_img;
+
+            pthread_create(&threads_list[j], nullptr, applySobelFilter, &thread_data[j]);
+
+            start_row = end_row ;
+            end_row += rows;
         }
+
+        for(int j = 0; j < threads[i]; j++)
+		    pthread_join(threads_list[j], nullptr);
+
+        auto end = chrono::steady_clock::now();
+        auto elapsed_ms = chrono::duration<float, milli>(end - start);
+
+        cout << "Time taken with " << threads[i] << " thread(s): " << elapsed_ms.count() << " ms" << endl;
     }
+    stbi_write_png("test.png", width, height, 1, output_img, width);
 
-    // Записываем результат в файл
-    stbi_write_jpg("sobel_result.jpg", width, height, channels, result.data(), 100);
-
-    // Освобождаем память, выделенную для изображения
-    stbi_image_free(image);
-
+    stbi_image_free(input_img);
     return 0;
 }
